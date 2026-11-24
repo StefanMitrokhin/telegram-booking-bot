@@ -221,3 +221,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# booking bot runtime data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
