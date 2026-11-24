@@ -1,4 +1,4 @@
-"""Middlewares."""
+"""Session and user middlewares."""
 
 from __future__ import annotations
 
@@ -9,35 +9,39 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from booking_bot.bot import helpers
-from booking_bot.config import Settings
+from booking_bot.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
 
-class SettingsMiddleware(BaseMiddleware):
+def _private_user(event: object):
+    if isinstance(event, Message):
+        chat = event.chat
+    elif isinstance(event, CallbackQuery) and event.message is not None:
+        chat = event.message.chat
+    else:
+        return None
+    if chat.type != "private":
+        return None
+    return event.from_user
+
+
+class DbSessionMiddleware(BaseMiddleware):
     def __init__(
         self,
-        settings: Settings,
         engine: AsyncEngine,
         session_factory: async_sessionmaker[AsyncSession],
-    ):
-        self.settings = settings
+        settings: Settings | None = None,
+    ) -> None:
         self.engine = engine
         self.session_factory = session_factory
+        self.settings = settings if settings is not None else get_settings()
 
     async def __call__(self, handler, event, data):
         data["settings"] = self.settings
         data["engine"] = self.engine
         data["session_factory"] = self.session_factory
-        tg = event.from_user if isinstance(event, (Message, CallbackQuery)) else None
-        data["is_admin"] = tg.id in set(self.settings.admin_ids) if tg else False
-        return await handler(event, data)
-
-
-class DbSessionMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        factory: async_sessionmaker[AsyncSession] = data["session_factory"]
-        async with factory() as session:
+        async with self.session_factory() as session:
             data["session"] = session
             try:
                 result = await handler(event, data)
@@ -50,14 +54,19 @@ class DbSessionMiddleware(BaseMiddleware):
 
 class UserMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
-        tg = event.from_user if isinstance(event, (Message, CallbackQuery)) else None
+        tg = _private_user(event)
         if tg is None:
+            data["is_admin"] = False
             return await handler(event, data)
+        session = data["session"]
         data["db_user"] = await helpers.upsert_user(
-            data["session"],
+            session,
             telegram_id=tg.id,
             username=tg.username,
-            full_name=(tg.full_name or "Клиент"),
+            full_name=tg.full_name or "Клиент",
         )
+        # Release the write lock before handlers open their own BEGIN IMMEDIATE connections.
+        await session.commit()
+        data["is_admin"] = tg.id in data["settings"].admin_ids
         logger.debug("user_upsert", extra={"telegram_id": tg.id})
         return await handler(event, data)

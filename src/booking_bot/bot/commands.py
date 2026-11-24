@@ -1,4 +1,4 @@
-"""BotFather commands."""
+"""BotFather command menu."""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ from booking_bot.config import Settings
 logger = logging.getLogger(__name__)
 
 
-async def set_my_commands(bot: Bot, settings: Settings) -> None:
-    base = (
+async def setup_commands(bot: Bot, settings: Settings) -> None:
+    base = [
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="book", description="Записаться"),
         BotCommand(command="my", description="Мои записи"),
         BotCommand(command="cancel", description="Сбросить действие"),
-    )
-    await bot.set_my_commands(list(base), scope=BotCommandScopeDefault())
-    admin = list(base) + [BotCommand(command="admin", description="Админ-панель")]
+    ]
+    await bot.set_my_commands(base, scope=BotCommandScopeDefault())
+    admin = [*base, BotCommand(command="admin", description="Админ-панель")]
     for admin_id in settings.admin_ids:
         try:
             await bot.set_my_commands(admin, scope=BotCommandScopeChat(chat_id=admin_id))

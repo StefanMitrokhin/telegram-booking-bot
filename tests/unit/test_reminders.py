@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from booking_bot.services.reminders import plan_reminders, reminder_decision
-from booking_bot.texts import reminder_text
+from booking_bot.bot.texts import reminder_text
 
 
 def test_plan_three_days():

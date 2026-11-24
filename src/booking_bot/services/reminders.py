@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from booking_bot.db.models import Booking, Reminder, User
 from booking_bot.db.session import immediate_session
 from booking_bot.domain.enums import BookingStatus, ReminderStatus
-from booking_bot.texts import reminder_text
+from booking_bot.bot.texts import reminder_text
 
 logger = logging.getLogger("booking_bot.services.reminders")
 

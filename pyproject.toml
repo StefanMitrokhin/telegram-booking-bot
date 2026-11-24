@@ -43,21 +43,12 @@ testpaths = ["tests"]
 target-version = "py311"
 line-length = 100
 src = ["src", "tests", "alembic"]
-extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-"alembic/versions/*.py" = ["E501", "I001", "UP035", "UP007"]
-"src/booking_bot/services/parsing.py" = ["RUF001"]
-"src/booking_bot/texts.py" = ["RUF001"]
-"src/booking_bot/bot/texts.py" = ["RUF001", "E501"]
-"src/booking_bot/bot/keyboards.py" = ["RUF001", "E501"]
-"src/booking_bot/bot/commands.py" = ["RUF001", "RUF005"]
-"src/booking_bot/services/timeutils.py" = ["RUF001"]
-"src/booking_bot/services/export.py" = ["RUF001"]
-"tests/**/*.py" = ["RUF001"]
+"alembic/versions/*.py" = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"

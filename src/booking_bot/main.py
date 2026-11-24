@@ -7,15 +7,15 @@ import logging
 import sys
 from datetime import UTC, datetime
 
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pydantic import ValidationError
 from sqlalchemy import text
 
+from booking_bot.bot.commands import setup_commands
+from booking_bot.bot.factory import create_bot, create_dispatcher
 from booking_bot.config import Settings, get_settings
 from booking_bot.db import create_engine, create_session_factory, sqlite_path
 from booking_bot.domain.enums import ReminderStatus
@@ -30,7 +30,7 @@ class _BotSender:
         self._bot = bot
 
     async def send(self, telegram_id: int, body: str) -> None:
-        await self._bot.send_message(telegram_id, body)
+        await self._bot.send_message(telegram_id, body, parse_mode="HTML")
 
 
 async def _run_migrations(settings: Settings) -> None:
@@ -62,22 +62,6 @@ async def _recover_stale(engine) -> None:
             )
     for broadcast_id in ids:
         logger.warning("broadcast_interrupted", extra={"broadcast_id": broadcast_id})
-
-
-async def _set_commands(bot: Bot, settings: Settings) -> None:
-    base_commands = [
-        BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="book", description="Записаться"),
-        BotCommand(command="my", description="Мои записи"),
-        BotCommand(command="cancel", description="Сбросить действие"),
-    ]
-    await bot.set_my_commands(base_commands, scope=BotCommandScopeDefault())
-    for admin_id in settings.admin_ids:
-        admin_commands = [*base_commands, BotCommand(command="admin", description="Админ-панель")]
-        try:
-            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
-        except Exception:
-            logger.exception("set commands failed", extra={"telegram_id": admin_id})
 
 
 async def _schedule_pending_reminders(
@@ -129,57 +113,54 @@ async def run() -> int:
         await _run_migrations(settings)
 
     engine = create_engine(settings.database_url)
-    create_session_factory(engine)
+    session_factory = create_session_factory(engine)
+    bot = create_bot(settings)
+    scheduler: AsyncIOScheduler | None = None
+    try:
+        await _recover_stale(engine)
 
-    await _recover_stale(engine)
+        dp = create_dispatcher(settings, engine, session_factory)
+        sender = _BotSender(bot)
 
-    bot = Bot(token=settings.bot_token)
-    dp = Dispatcher(storage=MemoryStorage())
-    sender = _BotSender(bot)
+        async def deliver_job(reminder_id: int) -> None:
+            await deliver_reminder(
+                reminder_id,
+                sender,
+                datetime.now(UTC),
+                engine=engine,
+                zone=settings.zone,
+            )
 
-    async def deliver_job(reminder_id: int) -> None:
-        await deliver_reminder(
-            reminder_id,
-            sender,
-            datetime.now(UTC),
-            engine=engine,
-            zone=settings.zone,
+        async def sweep_job() -> None:
+            await sweep(engine, sender, datetime.now(UTC), settings.zone)
+            write_heartbeat()
+
+        scheduler = AsyncIOScheduler(timezone=UTC)
+        scheduler.add_job(
+            sweep_job,
+            trigger=IntervalTrigger(seconds=settings.reminder_sweep_seconds),
+            id="reminder_sweep",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
         )
-
-    scheduler = AsyncIOScheduler(timezone=UTC)
-
-    async def sweep_job() -> None:
+        await _schedule_pending_reminders(scheduler, engine, settings, deliver_job)
+        scheduler.start()
         await sweep(engine, sender, datetime.now(UTC), settings.zone)
+
+        try:
+            me = await bot.get_me()
+        except Exception:
+            return 1
+
         write_heartbeat()
+        logger.info("bot_started", extra={"username": me.username})
+        await setup_commands(bot, settings)
 
-    scheduler.add_job(
-        sweep_job,
-        trigger=IntervalTrigger(seconds=settings.reminder_sweep_seconds),
-        id="reminder_sweep",
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
-    await _schedule_pending_reminders(scheduler, engine, settings, deliver_job)
-    scheduler.start()
-    await sweep(engine, sender, datetime.now(UTC), settings.zone)
-
-    try:
-        me = await bot.get_me()
-    except Exception:
-        await scheduler.shutdown(wait=False)
-        await bot.session.close()
-        await engine.dispose()
-        return 1
-
-    write_heartbeat()
-    logger.info("bot_started", extra={"username": me.username})
-    await _set_commands(bot, settings)
-
-    try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        scheduler.shutdown(wait=False)
+        if scheduler is not None and scheduler.running:
+            scheduler.shutdown(wait=False)
         await bot.session.close()
         await engine.dispose()
     return 0
