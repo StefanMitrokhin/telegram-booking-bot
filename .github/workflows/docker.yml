@@ -43,7 +43,8 @@ jobs:
         run: |
           set -e
           docker compose down --remove-orphans || true
-          rm -f data/booking.db data/booking.db-wal data/booking.db-shm
+          docker run --rm -v "$PWD/data:/data" alpine:3.20 sh -c \
+            'rm -f /data/booking.db /data/booking.db-wal /data/booking.db-shm'
           docker compose up -d --no-build
           trap 'docker compose down' EXIT
           ok=0
