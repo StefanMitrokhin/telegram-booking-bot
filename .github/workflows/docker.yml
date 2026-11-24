@@ -1,0 +1,63 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Prepare environment
+        run: |
+          mkdir -p data
+          cp .env.example .env
+          sed -i 's/^BOT_TOKEN=.*/BOT_TOKEN=123456789:AAH_fake_token_for_tests_only/' .env
+          sed -i 's/^ADMIN_IDS=.*/ADMIN_IDS=1/' .env
+
+      - name: Entrypoint argument passthrough
+        run: |
+          docker compose run --rm --no-deps bot python -c "print('entrypoint_passthrough_ok')"
+
+      - name: Apply migrations
+        run: docker compose run --rm --no-deps bot alembic upgrade head
+
+      - name: Verify database file ownership
+        run: |
+          test -f data/booking.db
+          db_uid="$(stat -c '%u' data/booking.db)"
+          db_gid="$(stat -c '%g' data/booking.db)"
+          test "$db_uid" -eq 10001
+          test "$db_gid" -eq 10001
+
+      - name: Seed smoke
+        run: docker compose run --rm --no-deps bot python -m booking_bot.seed
+
+      - name: Default entrypoint starts bot and applies migrations
+        env:
+          COMPOSE_FILE: docker-compose.yml:.github/docker-compose.smoke.yml
+        run: |
+          set -e
+          docker compose down --remove-orphans || true
+          docker run --rm -v "$PWD/data:/data" alpine:3.20 sh -c \
+            'rm -f /data/booking.db /data/booking.db-wal /data/booking.db-shm'
+          docker compose up -d --no-build
+          trap 'docker compose down' EXIT
+          ok=0
+          for _ in $(seq 1 60); do
+            if docker compose logs bot 2>&1 | grep -q 'migrations_applied'; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            docker compose logs bot
+            exit 1
+          fi
