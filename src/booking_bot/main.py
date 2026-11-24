@@ -34,11 +34,16 @@ class _BotSender:
 
 
 async def _run_migrations(settings: Settings) -> None:
-    from alembic import command
-    from alembic.config import Config
-
-    alembic_cfg = Config("alembic.ini")
-    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+    # Subprocess avoids alembic env.py calling asyncio.run() inside asyncio.to_thread.
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "alembic",
+        "upgrade",
+        "head",
+    )
+    if await proc.wait() != 0:
+        raise RuntimeError("migration failed")
     logger.info("migrations_applied", extra={"auto": settings.auto_migrate})
 
 
