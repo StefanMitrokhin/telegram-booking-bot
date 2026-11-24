@@ -8,6 +8,7 @@ from datetime import datetime, time
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 
 from booking_bot.bot import helpers
 from booking_bot.bot.callbacks import ABkCD, ACalCD, ADateCD, AdmCD
@@ -26,7 +27,9 @@ from booking_bot.bot.texts import (
     T_STALE,
 )
 from booking_bot.config import Settings
+from booking_bot.db.models import Reminder
 from booking_bot.services.booking import BookingService, list_day_bookings
+from booking_bot.services.reminders import remove_scheduled_reminder_jobs
 from booking_bot.services.timeutils import format_day, now_utc, to_local, ymd_to_date
 
 logger = logging.getLogger(__name__)
@@ -110,7 +113,7 @@ async def day_pick(cb: CallbackQuery, callback_data: ADateCD, session, settings:
 
 @router.callback_query(ABkCD.filter())
 async def day_booking_action(
-    cb: CallbackQuery, callback_data: ABkCD, session, settings: Settings, engine
+    cb: CallbackQuery, callback_data: ABkCD, session, settings: Settings, engine, scheduler=None
 ) -> None:
     if cb.message is None:
         await cb.answer()
@@ -143,6 +146,11 @@ async def day_booking_action(
         if result.kind != "cancelled" or result.booking is None:
             await toast(cb, T_CANCEL_NOT_FOUND)
             return
+        if scheduler is not None:
+            reminder_ids = await session.scalars(
+                select(Reminder.id).where(Reminder.booking_id == booking.id)
+            )
+            remove_scheduled_reminder_jobs(scheduler, reminder_ids)
         lines = [T_ADMIN_CANCELLED(booking.id)]
         try:
             await cb.bot.send_message(

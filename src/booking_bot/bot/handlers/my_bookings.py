@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 
 from booking_bot.bot import helpers
 from booking_bot.bot.callbacks import BkCD, MyCD
@@ -20,8 +21,10 @@ from booking_bot.bot.texts import (
     T_MY_SECTION_PAST,
     T_MY_SECTION_UPCOMING,
 )
+from booking_bot.db.models import Reminder
 from booking_bot.services.booking import BookingService, can_client_cancel
 from booking_bot.services.plurals import format_lead
+from booking_bot.services.reminders import remove_scheduled_reminder_jobs
 from booking_bot.services.timeutils import now_utc
 
 router = Router(name="my")
@@ -63,7 +66,8 @@ async def show_my_bookings(
                 cancel.append(b)
     if page == 0 and past:
         lines.append(T_MY_SECTION_PAST)
-        for b in past[:5]:
+        past_view = sorted(past, key=lambda b: (b.starts_at, b.id), reverse=True)[:5]
+        for b in past_view:
             lines.extend([T_MY_CARD(b, now=now, zone=settings.zone), ""])
     text = "\n".join(lines).strip()
     if prefix:
@@ -86,7 +90,9 @@ async def page(cb: CallbackQuery, callback_data: MyCD, session, settings, db_use
 
 
 @router.callback_query(BkCD.filter())
-async def bk(cb: CallbackQuery, callback_data: BkCD, session, settings, db_user, engine):
+async def bk(
+    cb: CallbackQuery, callback_data: BkCD, session, settings, db_user, engine, scheduler=None
+):
     booking = await helpers.get_booking(session, callback_data.id)
     if booking is None or booking.client_telegram_id != db_user.telegram_id:
         await toast(cb, T_CANCEL_NOT_FOUND)
@@ -129,6 +135,11 @@ async def bk(cb: CallbackQuery, callback_data: BkCD, session, settings, db_user,
         await toast(cb, T_CANCEL_NOT_FOUND)
         return
     if res.kind == "cancelled" and res.booking is not None:
+        if scheduler is not None:
+            reminder_ids = await session.scalars(
+                select(Reminder.id).where(Reminder.booking_id == callback_data.id)
+            )
+            remove_scheduled_reminder_jobs(scheduler, reminder_ids)
         await helpers.notify_admins(
             cb.bot,
             engine,

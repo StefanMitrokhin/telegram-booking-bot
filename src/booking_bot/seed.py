@@ -16,10 +16,10 @@ from booking_bot.db.models import Service, Specialist, SpecialistService, User, 
 from booking_bot.domain.enums import BookingStatus
 from booking_bot.logging_setup import setup_logging
 from booking_bot.main import _run_migrations
-from booking_bot.services.booking import BookingService
+from booking_bot.services.booking import BookingService, can_client_cancel
 from booking_bot.services.schedule import resolve_intervals
 from booking_bot.services.slots import generate_slots
-from booking_bot.services.timeutils import date_to_ymd, now_utc, to_local
+from booking_bot.services.timeutils import date_to_ymd, localize, now_utc, to_local, ymd_to_date
 
 logger = logging.getLogger("booking_bot.seed")
 
@@ -177,13 +177,15 @@ async def _first_slot(
     service,
     start_day: date,
     now: datetime,
+    max_offset: int | None = None,
 ) -> tuple[int, int] | None:
     zone = settings.zone
     session_factory = create_session_factory(engine)
     async with session_factory() as session:
         from booking_bot.db.models import Booking, ScheduleOverride, WorkInterval
 
-        for offset in range(0, settings.booking_horizon_days + 1):
+        day_span = max_offset + 1 if max_offset is not None else settings.booking_horizon_days + 1
+        for offset in range(0, day_span):
             day = start_day + timedelta(days=offset)
             weekly_rows = [
                 tuple(row)
@@ -264,9 +266,10 @@ async def _seed_bookings(*, engine, settings, demo_id, services, specialists, no
         start_day=first_day,
         now=now,
     )
+    first_created = None
     if slot:
         ymd, minute = slot
-        await BookingService.create(
+        first_created = await BookingService.create(
             engine=engine,
             client_id=demo_id,
             service_id=services["Мужская стрижка"].id,
@@ -284,44 +287,70 @@ async def _seed_bookings(*, engine, settings, demo_id, services, specialists, no
     else:
         logger.warning("seed_slot_missing")
 
-    second_day = today + timedelta(days=3)
-    slot = await _first_slot(
-        engine=engine,
-        settings=settings,
-        specialist_id=maria.id,
-        service=services["Детская стрижка"],
-        start_day=second_day,
-        now=now,
-    )
-    if slot:
-        ymd, minute = slot
-        await BookingService.create(
-            engine=engine,
-            client_id=demo_id,
-            service_id=services["Детская стрижка"].id,
-            specialist_id=maria.id,
-            ymd=ymd,
-            minute=minute,
-            now=now,
-            zone=zone,
-            horizon_days=settings.booking_horizon_days,
-            min_lead_minutes=settings.min_lead_minutes,
-            buffer_minutes=settings.buffer_minutes,
-            step_minutes=settings.slot_step_minutes,
-            offsets_minutes=settings.reminder_offsets_minutes,
-        )
-    else:
+    if first_created is None or first_created.booking is None:
         logger.warning("seed_slot_missing")
+    else:
+        second_day = to_local(first_created.booking.starts_at, zone).date() + timedelta(days=1)
+        slot = await _first_slot(
+            engine=engine,
+            settings=settings,
+            specialist_id=maria.id,
+            service=services["Детская стрижка"],
+            start_day=second_day,
+            now=now,
+            max_offset=0,
+        )
+        if slot:
+            ymd, minute = slot
+            await BookingService.create(
+                engine=engine,
+                client_id=demo_id,
+                service_id=services["Детская стрижка"].id,
+                specialist_id=maria.id,
+                ymd=ymd,
+                minute=minute,
+                now=now,
+                zone=zone,
+                horizon_days=settings.booking_horizon_days,
+                min_lead_minutes=settings.min_lead_minutes,
+                buffer_minutes=settings.buffer_minutes,
+                step_minutes=settings.slot_step_minutes,
+                offsets_minutes=settings.reminder_offsets_minutes,
+            )
+        else:
+            logger.warning("seed_slot_missing")
 
-    cancel_lead_day = today + timedelta(days=settings.cancel_min_lead_minutes // (24 * 60) + 1)
     slot = await _first_slot(
         engine=engine,
         settings=settings,
         specialist_id=ilya.id,
         service=services["Камуфляж седины"],
-        start_day=cancel_lead_day,
+        start_day=today,
         now=now,
     )
+    if slot:
+        ymd, minute = slot
+        day = ymd_to_date(ymd)
+        if day is not None:
+            start_local = localize(day, minute, zone)
+            if start_local is not None and not can_client_cancel(
+                status=BookingStatus.CONFIRMED,
+                starts_at=start_local.astimezone(UTC),
+                now=now,
+                cancel_min_lead_minutes=settings.cancel_min_lead_minutes,
+            ):
+                shift_day = to_local(
+                    now + timedelta(minutes=settings.cancel_min_lead_minutes + 1440),
+                    zone,
+                ).date()
+                slot = await _first_slot(
+                    engine=engine,
+                    settings=settings,
+                    specialist_id=ilya.id,
+                    service=services["Камуфляж седины"],
+                    start_day=shift_day,
+                    now=now,
+                )
     if slot is None:
         logger.warning("seed_slot_missing")
         return

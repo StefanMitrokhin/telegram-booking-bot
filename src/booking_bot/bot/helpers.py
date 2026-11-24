@@ -204,15 +204,17 @@ async def list_specialists_for_service(
     settings: Settings,
     now: datetime,
 ) -> list[SpecialistView]:
-    specialists = await session.scalars(
-        select(Specialist)
-        .join(SpecialistService, SpecialistService.specialist_id == Specialist.id)
-        .where(
-            SpecialistService.service_id == service_id,
-            Specialist.is_active.is_(True),
+    specialists = (
+        await session.scalars(
+            select(Specialist)
+            .join(SpecialistService, SpecialistService.specialist_id == Specialist.id)
+            .where(
+                SpecialistService.service_id == service_id,
+                Specialist.is_active.is_(True),
+            )
+            .order_by(Specialist.sort_order, Specialist.id)
         )
-        .order_by(Specialist.sort_order, Specialist.id)
-    )
+    ).all()
     service = await session.get(Service, service_id)
     if service is None:
         return []

@@ -64,6 +64,18 @@ async def _recover_stale(engine) -> None:
         logger.warning("broadcast_interrupted", extra={"broadcast_id": broadcast_id})
 
 
+def _utc_fire_at(value: object) -> datetime:
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value)
+    elif isinstance(value, datetime):
+        parsed = value
+    else:
+        raise TypeError("fire_at")
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 async def _schedule_pending_reminders(
     scheduler: AsyncIOScheduler,
     engine,
@@ -84,7 +96,7 @@ async def _schedule_pending_reminders(
     for reminder_id, fire_at in pending:
         scheduler.add_job(
             deliver,
-            trigger=DateTrigger(run_date=fire_at),
+            trigger=DateTrigger(run_date=_utc_fire_at(fire_at), timezone=UTC),
             id=f"reminder:{reminder_id}",
             replace_existing=True,
             misfire_grace_time=3600,
@@ -133,7 +145,6 @@ async def run() -> int:
 
         async def sweep_job() -> None:
             await sweep(engine, sender, datetime.now(UTC), settings.zone)
-            write_heartbeat()
 
         scheduler = AsyncIOScheduler(timezone=UTC)
         scheduler.add_job(
@@ -157,6 +168,7 @@ async def run() -> int:
         logger.info("bot_started", extra={"username": me.username})
         await setup_commands(bot, settings)
 
+        dp.workflow_data["scheduler"] = scheduler
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         if scheduler is not None and scheduler.running:

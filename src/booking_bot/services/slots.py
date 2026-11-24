@@ -76,6 +76,15 @@ def generate_slots(
                 continue
             start_utc_dt = start_local.astimezone(UTC)
             end_utc_dt = end_local.astimezone(UTC)
+            if not slot_in_schedule(
+                day=day,
+                intervals=intervals,
+                duration_minutes=duration_minutes,
+                step_minutes=step_minutes,
+                minute=this,
+                zone=zone,
+            ):
+                continue
             if start_utc_dt < min_start:
                 continue
             if conflicts(start_utc_dt, end_utc_dt, busy, buffer_minutes):

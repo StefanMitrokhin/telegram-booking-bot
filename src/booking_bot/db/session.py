@@ -40,6 +40,7 @@ def _apply_pragmas(dbapi_conn: Any, connection_record: Any) -> None:
     if not _MEMORY_RE.search(url):
         cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=5000")
+    dbapi_conn.commit()
     cursor.close()
 
 

@@ -25,10 +25,13 @@ from booking_bot.db.base import Base
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (Index("ix_users_is_blocked", "is_blocked"),)
+    __table_args__ = (
+        Index("ix_users_is_blocked", "is_blocked"),
+        UniqueConstraint("telegram_id", name="uq_users_telegram_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     username: Mapped[str | None] = mapped_column(String(32), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(16), nullable=True)

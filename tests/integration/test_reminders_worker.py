@@ -5,12 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.date import DateTrigger
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from booking_bot.db.base import Base
 from booking_bot.db.models import Booking, Reminder, User
 from booking_bot.domain.enums import BookingStatus, ReminderStatus
-from booking_bot.services.reminders import deliver_reminder
+from booking_bot.services.reminders import deliver_reminder, remove_scheduled_reminder_jobs
 
 
 class FakeSender:
@@ -145,6 +147,78 @@ async def test_overdue_future_visit_sends(engine, zone):
     now = datetime(2026, 11, 24, 10, 0, tzinfo=UTC)
     await deliver_reminder(reminder_id, sender, now, engine=engine, zone=zone)
     assert sender.calls
+
+
+async def test_cancelled_after_start_uses_booking_cancelled_reason(engine, zone):
+    reminder_id, _ = await _seed_reminder(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime(2026, 11, 24, 10, 0, tzinfo=UTC)
+    async with factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        booking = await session.get(Booking, reminder.booking_id)
+        booking.status = BookingStatus.CANCELLED_BY_CLIENT
+        booking.starts_at = now - timedelta(hours=1)
+        booking.ends_at = now
+        reminder.status = ReminderStatus.PENDING
+        await session.commit()
+    sender = FakeSender()
+    await deliver_reminder(reminder_id, sender, now, engine=engine, zone=zone)
+    assert not sender.calls
+    async with factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        assert reminder.status == ReminderStatus.SKIPPED
+        assert reminder.last_error == "booking_cancelled"
+
+
+async def test_cancel_during_sending_does_not_mark_sent(engine, zone):
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
+
+    from booking_bot.db.session import immediate_session as real_immediate
+
+    reminder_id, _ = await _seed_reminder(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime(2026, 11, 24, 10, 0, tzinfo=UTC)
+    sessions_closed = 0
+
+    @asynccontextmanager
+    async def hooked_immediate(eng):
+        nonlocal sessions_closed
+        async with real_immediate(eng) as session:
+            yield session
+        sessions_closed += 1
+        if sessions_closed == 1:
+            async with factory() as session:
+                reminder = await session.get(Reminder, reminder_id)
+                booking = await session.get(Booking, reminder.booking_id)
+                booking.status = BookingStatus.CANCELLED_BY_CLIENT
+                await session.commit()
+
+    sender = FakeSender()
+    with patch("booking_bot.services.reminders.immediate_session", hooked_immediate):
+        await deliver_reminder(reminder_id, sender, now, engine=engine, zone=zone)
+    assert not sender.calls
+    async with factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        assert reminder.status == ReminderStatus.SENDING
+
+
+async def test_remove_scheduled_reminder_jobs():
+    scheduler = AsyncIOScheduler(timezone=UTC)
+    run_at = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)
+
+    async def noop() -> None:
+        return None
+
+    scheduler.add_job(
+        noop,
+        trigger=DateTrigger(run_date=run_at),
+        id="reminder:42",
+    )
+    scheduler.start()
+    remove_scheduled_reminder_jobs(scheduler, [42])
+    assert scheduler.get_job("reminder:42") is None
+    scheduler.shutdown(wait=False)
 
 
 async def test_overdue_past_visit_skips(engine, zone):

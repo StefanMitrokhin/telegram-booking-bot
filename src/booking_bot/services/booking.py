@@ -127,8 +127,10 @@ class BookingService:
             service = await session.get(Service, service_id)
             specialist = await session.get(Specialist, specialist_id)
             if service is None or specialist is None:
+                logger.info("booking_rejected", extra={"kind": "unavailable"})
                 return BookingResult("unavailable")
             if not service.is_active or not specialist.is_active:
+                logger.info("booking_rejected", extra={"kind": "unavailable"})
                 return BookingResult("unavailable")
             link = await session.execute(
                 select(SpecialistService).where(
@@ -137,21 +139,26 @@ class BookingService:
                 )
             )
             if link.scalar_one_or_none() is None:
+                logger.info("booking_rejected", extra={"kind": "unavailable"})
                 return BookingResult("unavailable")
 
             if not 0 <= minute <= 1439:
+                logger.info("booking_rejected", extra={"kind": "not_in_schedule"})
                 return BookingResult("not_in_schedule")
             day = ymd_to_date(ymd)
             if day is None:
+                logger.info("booking_rejected", extra={"kind": "not_in_schedule"})
                 return BookingResult("not_in_schedule")
 
             start_local = localize(day, minute, zone)
             end_local = localize(day, minute + service.duration_minutes, zone)
             if start_local is None or end_local is None:
+                logger.info("booking_rejected", extra={"kind": "not_in_schedule"})
                 return BookingResult("not_in_schedule")
 
             window_start, window_end = booking_window(now, zone, horizon_days)
             if day < window_start or day > window_end:
+                logger.info("booking_rejected", extra={"kind": "not_in_schedule"})
                 return BookingResult("not_in_schedule")
 
             start = start_local.astimezone(UTC)
@@ -182,6 +189,7 @@ class BookingService:
                 minute=minute,
                 zone=zone,
             ):
+                logger.info("booking_rejected", extra={"kind": "not_in_schedule"})
                 return BookingResult("not_in_schedule")
 
             if start < now + timedelta(minutes=min_lead_minutes):
@@ -204,6 +212,7 @@ class BookingService:
 
             client = await session.get(User, client_id)
             if client is None:
+                logger.info("booking_rejected", extra={"kind": "unavailable"})
                 return BookingResult("unavailable")
 
             created_at = now

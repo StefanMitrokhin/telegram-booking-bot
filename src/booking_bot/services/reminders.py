@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from apscheduler.jobstores.base import JobLookupError
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import selectinload
@@ -108,11 +111,10 @@ async def deliver_reminder(
         user = row.client
         decision = reminder_decision(row.status, row.starts_at, now)
         if decision != "send":
-            reason = (
-                "appointment_started"
-                if _aware(row.starts_at) <= _aware(now)
-                else "booking_cancelled"
-            )
+            if row.status != BookingStatus.CONFIRMED:
+                reason = "booking_cancelled"
+            else:
+                reason = "appointment_started"
             reminder.status = ReminderStatus.SKIPPED
             reminder.last_error = reason
             logger.info(
@@ -130,6 +132,14 @@ async def deliver_reminder(
             zone=zone,
             offset_minutes=reminder.offset_minutes,
         )
+
+    async with immediate_session(engine) as session:
+        reminder = await session.get(Reminder, reminder_id)
+        if reminder is None or reminder.status != ReminderStatus.SENDING:
+            return
+        booking = await session.get(Booking, reminder.booking_id)
+        if booking is None or booking.status != BookingStatus.CONFIRMED:
+            return
 
     try:
         await sender.send(telegram_id, body)
@@ -162,7 +172,7 @@ async def deliver_reminder(
 
     async with immediate_session(engine) as session:
         reminder = await session.get(Reminder, reminder_id)
-        if reminder is None:
+        if reminder is None or reminder.status != ReminderStatus.SENDING:
             return
         reminder.status = ReminderStatus.SENT
         reminder.sent_at = now
@@ -197,6 +207,13 @@ async def sweep(engine: AsyncEngine, sender: ReminderSender, now: datetime, zone
             await deliver_reminder(reminder_id, sender, now, engine=engine, zone=zone)
         except Exception:
             logger.exception("reminder deliver failed", extra={"reminder_id": reminder_id})
+    write_heartbeat()
+
+
+def remove_scheduled_reminder_jobs(scheduler: object, reminder_ids: Iterable[int]) -> None:
+    for reminder_id in reminder_ids:
+        with suppress(JobLookupError):
+            scheduler.remove_job(f"reminder:{reminder_id}")  # type: ignore[union-attr]
 
 
 def write_heartbeat() -> None:

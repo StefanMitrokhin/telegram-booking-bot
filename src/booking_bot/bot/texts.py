@@ -216,7 +216,7 @@ def T_CANCEL_TOO_LATE(hours_label: str, salon_phone: str) -> str:
         f"Эту запись уже нельзя отменить через бота: до визита меньше {html.escape(hours_label)}."
     )
     return (
-        f"{body}\n\nПозвоните: {html.escape(salon_phone)}"  # noqa: RUF001
+        f"{body}\nПозвоните: {html.escape(salon_phone)}"  # noqa: RUF001
         if salon_phone
         else f"{body}\n\nНапишите администратору."  # noqa: RUF001
     )
@@ -248,9 +248,9 @@ def T_ADMIN_NEW(booking: BookingView, phone_or_dash: str, *, zone: ZoneInfo) -> 
 
 
 def T_ADMIN_CLIENT_CANCELLED(booking: BookingView, *, zone: ZoneInfo) -> str:
-    return T_ADMIN_NEW(booking, booking.client_phone or "—", zone=zone).replace(
-        "Новая запись", "Клиент отменил запись", 1
-    )
+    phone = format_phone(booking.client_phone) if booking.client_phone else "—"
+    text = T_ADMIN_NEW(booking, phone, zone=zone)
+    return "Клиент отменил запись" + text.removeprefix("Новая запись")
 
 
 def T_CLIENT_ADMIN_CANCELLED(booking: BookingView, *, zone: ZoneInfo) -> str:
