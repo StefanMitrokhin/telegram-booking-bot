@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import calendar
-from datetime import date
+import logging
+from datetime import date, datetime, time
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramForbiddenError, TelegramNotFound
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -23,7 +22,7 @@ from booking_bot.bot.callbacks import (
     SvcCD,
     SvcsCD,
 )
-from booking_bot.bot.helpers import answer_html, edit_html, toast
+from booking_bot.bot.helpers import answer_html, edit_html, render, toast
 from booking_bot.bot.keyboards import (
     calendar_keyboard,
     cancel_only_keyboard,
@@ -60,10 +59,10 @@ from booking_bot.bot.texts import (
     T_WELCOME,
 )
 from booking_bot.config import Settings
-from booking_bot.db.session import immediate_session
 from booking_bot.domain.views import UserView
 from booking_bot.services.booking import BookingService
 from booking_bot.services.parsing import format_phone
+from booking_bot.services.reminders import plan_reminders
 from booking_bot.services.timeutils import (
     booking_window,
     format_day,
@@ -74,26 +73,32 @@ from booking_bot.services.timeutils import (
     ymd_to_date,
 )
 
+logger = logging.getLogger(__name__)
 router = Router(name="booking")
 PAGE = 8
 SLOT_PAGE = 12
 
 
 async def open_services(
-    target: Message, *, session: AsyncSession, settings: Settings, page: int, is_admin: bool = False
+    target: Message,
+    *,
+    session: AsyncSession,
+    settings: Settings,
+    page: int,
+    is_admin: bool = False,
+    edit: bool = True,
 ):
     services = await helpers.list_active_services(session)
     if not services:
-        await edit_html(target, T_NO_SERVICES(), reply_markup=main_menu(is_admin=is_admin))
+        await render(target, T_NO_SERVICES(), main_menu(is_admin=is_admin), edit=edit)
         return
     pages = max(1, (len(services) + PAGE - 1) // PAGE)
     page = min(max(0, page), pages - 1)
-    await edit_html(
+    await render(
         target,
         T_CHOOSE_SERVICE(),
-        reply_markup=services_keyboard(
-            services[page * PAGE : (page + 1) * PAGE], page=page, total_pages=pages
-        ),
+        services_keyboard(services[page * PAGE : (page + 1) * PAGE], page=page, total_pages=pages),
+        edit=edit,
     )
 
 
@@ -125,7 +130,7 @@ async def admin_menu(
 ):
     await state.clear()
     if not is_admin:
-        await toast(cb, T_ADMIN_ONLY())
+        await toast(cb, T_ADMIN_ONLY)
         return
     if cb.message:
         from booking_bot.bot.handlers.admin.menu import show_admin_menu
@@ -143,42 +148,66 @@ async def book(cb: CallbackQuery, state: FSMContext, session, settings: Settings
 
 
 @router.callback_query(SvcsCD.filter())
-async def svcs(cb: CallbackQuery, d: SvcsCD, session, settings: Settings):
+async def svcs(cb: CallbackQuery, callback_data: SvcsCD, session, settings: Settings):
     if cb.message:
-        await open_services(cb.message, session=session, settings=settings, page=d.page)
+        await open_services(cb.message, session=session, settings=settings, page=callback_data.page)
     await cb.answer()
 
 
 @router.callback_query(SvcCD.filter())
-async def svc(cb: CallbackQuery, d: SvcCD, session, settings: Settings):
-    svc = await helpers.get_service(session, d.id)
+async def svc(cb: CallbackQuery, callback_data: SvcCD, session, settings: Settings):
+    svc = await helpers.get_service(session, callback_data.id)
     if svc is None or not svc.is_active:
         await toast(cb, T_SERVICE_GONE())
         return
     specs = await helpers.list_specialists_for_service(
-        session, service_id=d.id, settings=settings, now=now_utc()
+        session, service_id=callback_data.id, settings=settings, now=now_utc()
     )
     if not specs:
         if cb.message:
             await edit_html(
-                cb.message, T_NO_SPECIALISTS(svc.name), reply_markup=specialists_keyboard(d.id, [])
+                cb.message,
+                T_NO_SPECIALISTS(svc.name),
+                reply_markup=specialists_keyboard(callback_data.id, []),
             )
     elif cb.message:
         await edit_html(
             cb.message,
             T_CHOOSE_SPECIALIST(svc.name),
-            reply_markup=specialists_keyboard(d.id, specs),
+            reply_markup=specialists_keyboard(callback_data.id, specs),
         )
     await cb.answer()
 
 
 @router.callback_query(SpCD.filter())
-async def sp(cb: CallbackQuery, d: SpCD, session, settings: Settings):
+async def sp(cb: CallbackQuery, callback_data: SpCD, session, settings: Settings):
     today = to_local(now_utc(), settings.zone).date()
     await _cal(
-        cb.message, session, settings, d.service_id, d.specialist_id, today.year, today.month
+        cb.message,
+        session,
+        settings,
+        callback_data.service_id,
+        callback_data.specialist_id,
+        today.year,
+        today.month,
     )
     await cb.answer()
+
+
+def _calendar_markup(sid: int, spid: int, year: int, month: int):
+    prev_year, prev_month = helpers.shift_month(year, month, -1)
+    next_year, next_month = helpers.shift_month(year, month, 1)
+    title = month_title(year, month)
+    return calendar_keyboard(
+        service_id=sid,
+        specialist_id=spid,
+        prev_year=prev_year,
+        prev_month=prev_month,
+        next_year=next_year,
+        next_month=next_month,
+        month_title=title,
+        weeks=helpers.month_weeks(year, month),
+    )
 
 
 async def _cal(msg, session, settings, sid, spid, year, month):
@@ -186,54 +215,48 @@ async def _cal(msg, session, settings, sid, spid, year, month):
     sp = await helpers.get_specialist(session, spid)
     if not svc or not sp:
         return
-    py, pm = (year - 1, 12) if month == 1 else (year, month - 1)
-    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
-    weeks = []
-    for wk in calendar.Calendar(firstweekday=0).monthdayscalendar(year, month):
-        weeks.append([None if d == 0 else year * 10000 + month * 100 + d for d in wk])
     await edit_html(
         msg,
         T_CALENDAR(svc.name, sp.name, month_title(year, month)),
-        reply_markup=calendar_keyboard(
-            service_id=sid,
-            specialist_id=spid,
-            prev_year=py,
-            prev_month=pm,
-            next_year=ny,
-            next_month=nm,
-            month_title=month_title(year, month),
-            weeks=weeks,
-        ),
+        reply_markup=_calendar_markup(sid, spid, year, month),
     )
 
 
 @router.callback_query(CalCD.filter())
-async def cal(cb: CallbackQuery, d: CalCD, settings: Settings, session):
+async def cal(cb: CallbackQuery, callback_data: CalCD, settings: Settings, session):
     today, maxd = booking_window(now_utc(), settings.zone, settings.booking_horizon_days)
-    if date(d.year, d.month, 1) < date(today.year, today.month, 1):
-        await toast(cb, T_TOAST_MONTH_EARLY())
+    if date(callback_data.year, callback_data.month, 1) < date(today.year, today.month, 1):
+        await toast(cb, T_TOAST_MONTH_EARLY)
         return
-    if date(d.year, d.month, 1) > date(maxd.year, maxd.month, 1):
-        await toast(cb, T_TOAST_MONTH_LATE())
+    if date(callback_data.year, callback_data.month, 1) > date(maxd.year, maxd.month, 1):
+        await toast(cb, T_TOAST_MONTH_LATE)
         return
-    await _cal(cb.message, session, settings, d.service_id, d.specialist_id, d.year, d.month)
+    await _cal(
+        cb.message,
+        session,
+        settings,
+        callback_data.service_id,
+        callback_data.specialist_id,
+        callback_data.year,
+        callback_data.month,
+    )
     await cb.answer()
 
 
 @router.callback_query(DayCD.filter())
-async def day(cb: CallbackQuery, d: DayCD, session, settings: Settings):
+async def day(cb: CallbackQuery, callback_data: DayCD, session, settings: Settings):
     today, maxd = booking_window(now_utc(), settings.zone, settings.booking_horizon_days)
-    picked = ymd_to_date(d.ymd)
+    picked = ymd_to_date(callback_data.ymd)
     if picked is None or picked < today:
-        await toast(cb, T_TOAST_PAST())
+        await toast(cb, T_TOAST_PAST)
         return
     if picked > maxd:
-        await toast(cb, T_TOAST_FUTURE())
+        await toast(cb, T_TOAST_FUTURE)
         return
     slots = await helpers.list_day_slots(
         session,
-        service_id=d.service_id,
-        specialist_id=d.specialist_id,
+        service_id=callback_data.service_id,
+        specialist_id=callback_data.specialist_id,
         work_date=picked,
         settings=settings,
         now=now_utc(),
@@ -241,98 +264,142 @@ async def day(cb: CallbackQuery, d: DayCD, session, settings: Settings):
     if not slots:
         await toast(cb, T_TOAST_NO_SLOTS_DAY, show_alert=True)
         return
-    await _slots(cb.message, session, settings, d.service_id, d.specialist_id, d.ymd, slots, 0)
+    await _slots(
+        cb.message,
+        session,
+        settings,
+        callback_data.service_id,
+        callback_data.specialist_id,
+        callback_data.ymd,
+        slots,
+        0,
+    )
     await cb.answer()
 
 
-async def _slots(msg, session, settings, sid, spid, ymd, slots, page):
+async def _slots(
+    msg, session, settings, sid, spid, ymd, slots, page, *, prefix: str = "", edit: bool = True
+):
     svc = await helpers.get_service(session, sid)
     sp = await helpers.get_specialist(session, spid)
     day = ymd_to_date(ymd)
-    from booking_bot.services.timeutils import localize
-
-    start = localize(day, 0, settings.zone) if day else None
-    label = format_day(to_local(start, settings.zone)) if start else str(ymd)
+    if svc is None or sp is None or day is None:
+        return
+    label = format_day(datetime.combine(day, time.min))
     pages = max(1, (len(slots) + SLOT_PAGE - 1) // SLOT_PAGE)
-    await edit_html(
+    text = T_CHOOSE_SLOT(svc.name, sp.name, label)
+    await render(
         msg,
-        T_CHOOSE_SLOT(svc.name, sp.name, label),
-        reply_markup=slots_keyboard(
+        f"{prefix}\n\n{text}" if prefix else text,
+        slots_keyboard(
             service_id=sid,
             specialist_id=spid,
             ymd=ymd,
             slots=slots,
-            page=page,
+            page=min(max(0, page), pages - 1),
             total_pages=pages,
-            cal_year=day.year if day else 0,
-            cal_month=day.month if day else 0,
+            cal_year=day.year,
+            cal_month=day.month,
         ),
+        edit=edit,
     )
 
 
 @router.callback_query(SlotsCD.filter())
-async def slots(cb: CallbackQuery, d: SlotsCD, session, settings: Settings):
-    day = ymd_to_date(d.ymd)
+async def slots(cb: CallbackQuery, callback_data: SlotsCD, session, settings: Settings):
+    day = ymd_to_date(callback_data.ymd)
     if day is None:
         await toast(cb, T_STALE)
         return
     slots = await helpers.list_day_slots(
         session,
-        service_id=d.service_id,
-        specialist_id=d.specialist_id,
+        service_id=callback_data.service_id,
+        specialist_id=callback_data.specialist_id,
         work_date=day,
         settings=settings,
         now=now_utc(),
     )
-    await _slots(cb.message, session, settings, d.service_id, d.specialist_id, d.ymd, slots, d.page)
+    await _slots(
+        cb.message,
+        session,
+        settings,
+        callback_data.service_id,
+        callback_data.specialist_id,
+        callback_data.ymd,
+        slots,
+        callback_data.page,
+    )
     await cb.answer()
 
 
-@router.callback_query(SlotCD.filter())
-async def slot(cb: CallbackQuery, d: SlotCD, session, settings: Settings):
-    svc = await helpers.get_service(session, d.service_id)
-    sp = await helpers.get_specialist(session, d.specialist_id)
+async def show_confirm(
+    message: Message,
+    *,
+    session,
+    settings: Settings,
+    service_id: int,
+    specialist_id: int,
+    ymd: int,
+    minute: int,
+    edit: bool = True,
+) -> str | None:
+    """Render the confirmation screen; return None on success or a toast text on failure."""
+    svc = await helpers.get_service(session, service_id)
+    sp = await helpers.get_specialist(session, specialist_id)
     if not svc or not sp:
-        await toast(cb, T_STALE)
-        return
+        return T_STALE
     bounds = await helpers.resolve_slot_bounds(
         session,
-        service_id=d.service_id,
-        specialist_id=d.specialist_id,
-        ymd=d.ymd,
-        minute=d.minute,
+        service_id=service_id,
+        specialist_id=specialist_id,
+        ymd=ymd,
+        minute=minute,
         settings=settings,
     )
-    if bounds is None and cb.message:
-        await edit_html(cb.message, T_SLOT_GONE())
-        await cb.answer()
-        return
-    day = format_day(to_local(bounds.starts_at, settings.zone))
-    span = format_span(bounds.starts_at, bounds.ends_at, settings.zone)
+    if bounds is None:
+        return T_STALE
     text = T_CONFIRM(
         service=svc.name,
         specialist=sp.name,
-        day=day,
-        span=span,
+        day=format_day(to_local(bounds.starts_at, settings.zone)),
+        span=format_span(bounds.starts_at, bounds.ends_at, settings.zone),
         duration=svc.duration_minutes,
         price_minor=svc.price_minor,
         address=settings.business_address,
         salon_phone=settings.business_phone,
     )
-    await edit_html(
-        cb.message,
+    await render(
+        message,
         text,
-        reply_markup=confirm_keyboard(
-            service_id=d.service_id, specialist_id=d.specialist_id, ymd=d.ymd, minute=d.minute
+        confirm_keyboard(
+            service_id=service_id, specialist_id=specialist_id, ymd=ymd, minute=minute
         ),
+        edit=edit,
     )
+    return None
+
+
+@router.callback_query(SlotCD.filter())
+async def slot(cb: CallbackQuery, callback_data: SlotCD, session, settings: Settings):
+    failure = await show_confirm(
+        cb.message,
+        session=session,
+        settings=settings,
+        service_id=callback_data.service_id,
+        specialist_id=callback_data.specialist_id,
+        ymd=callback_data.ymd,
+        minute=callback_data.minute,
+    )
+    if failure is not None:
+        await toast(cb, failure)
+        return
     await cb.answer()
 
 
 @router.callback_query(OkCD.filter())
 async def ok(
     cb: CallbackQuery,
-    d: OkCD,
+    callback_data: OkCD,
     state: FSMContext,
     session,
     settings: Settings,
@@ -343,22 +410,63 @@ async def ok(
     if settings.require_phone and db_user.phone is None:
         await state.set_state(ClientStates.waiting_phone)
         await state.update_data(
-            service_id=d.service_id,
-            specialist_id=d.specialist_id,
-            ymd=d.ymd,
-            minute=d.minute,
+            service_id=callback_data.service_id,
+            specialist_id=callback_data.specialist_id,
+            ymd=callback_data.ymd,
+            minute=callback_data.minute,
             return_to="confirm",
         )
         await answer_html(cb.message, T_ASK_PHONE(), reply_markup=cancel_only_keyboard())
         await cb.answer()
         return
     await run_create(
-        cb, d.service_id, d.specialist_id, d.ymd, d.minute, db_user, settings, engine, is_admin
+        cb,
+        session,
+        callback_data.service_id,
+        callback_data.specialist_id,
+        callback_data.ymd,
+        callback_data.minute,
+        db_user,
+        settings,
+        engine,
+        is_admin,
     )
 
 
-async def run_create(source, sid, spid, ymd, minute, db_user, settings, engine, is_admin):
-    msg = source if isinstance(source, Message) else source.message
+async def _after_rejected_slot(
+    msg, session, settings, headline: str, sid, spid, ymd, *, edit: bool
+) -> None:
+    day = ymd_to_date(ymd)
+    slots = (
+        await helpers.list_day_slots(
+            session,
+            service_id=sid,
+            specialist_id=spid,
+            work_date=day,
+            settings=settings,
+            now=now_utc(),
+        )
+        if day is not None
+        else []
+    )
+    if slots:
+        await _slots(msg, session, settings, sid, spid, ymd, slots, 0, prefix=headline, edit=edit)
+        return
+    if day is None:
+        await render(msg, headline, None, edit=edit)
+        return
+    await render(
+        msg,
+        f"{headline}\n{T_TOAST_NO_SLOTS_DAY}",
+        _calendar_markup(sid, spid, day.year, day.month),
+        edit=edit,
+    )
+
+
+async def run_create(source, session, sid, spid, ymd, minute, db_user, settings, engine, is_admin):
+    is_callback = isinstance(source, CallbackQuery)
+    msg = source.message if is_callback else source
+    now = now_utc()
     res = await BookingService.create(
         engine=engine,
         client_id=db_user.id,
@@ -366,7 +474,7 @@ async def run_create(source, sid, spid, ymd, minute, db_user, settings, engine, 
         specialist_id=spid,
         ymd=ymd,
         minute=minute,
-        now=now_utc(),
+        now=now,
         zone=settings.zone,
         horizon_days=settings.booking_horizon_days,
         min_lead_minutes=settings.min_lead_minutes,
@@ -375,36 +483,40 @@ async def run_create(source, sid, spid, ymd, minute, db_user, settings, engine, 
         offsets_minutes=settings.reminder_offsets_minutes,
     )
     if res.kind in {"created", "exists"} and res.booking:
+        inserted = tuple(
+            offset
+            for offset, _ in plan_reminders(
+                starts_at=res.booking.starts_at,
+                now=res.booking.created_at,
+                offsets_minutes=settings.reminder_offsets_minutes,
+            )
+        )
         await answer_html(
             msg,
             T_BOOKED(
                 booking=res.booking,
                 user_phone=db_user.phone,
                 address=settings.business_address,
-                reminder_offsets=settings.reminder_offsets_minutes,
+                reminder_offsets=inserted,
                 zone=settings.zone,
             ),
             reply_markup=main_menu(is_admin=is_admin),
         )
         if res.kind == "created":
             phone = format_phone(db_user.phone) if db_user.phone else "—"
-            text = T_ADMIN_NEW(res.booking, phone, zone=settings.zone)
-            for aid in settings.admin_ids:
-                try:
-                    await msg.bot.send_message(aid, text, parse_mode="HTML")
-                except (TelegramForbiddenError, TelegramNotFound):
-                    async with immediate_session(engine) as s:
-                        await helpers.mark_user_blocked(s, telegram_id=aid)
-        if isinstance(source, CallbackQuery):
-            await source.answer()
-            return
-    kinds = {
-        "unavailable": T_UNAVAILABLE(),
-        "not_in_schedule": T_SLOT_GONE(),
-        "too_soon": T_TOO_SOON(),
-        "conflict": T_CONFLICT(),
-    }
-    if res.kind in kinds and msg:
-        await edit_html(msg, kinds[res.kind])
-    if isinstance(source, CallbackQuery):
+            await helpers.notify_admins(
+                msg.bot, engine, settings, T_ADMIN_NEW(res.booking, phone, zone=settings.zone)
+            )
+    elif res.kind == "unavailable":
+        await render(msg, T_UNAVAILABLE(), main_menu(is_admin=is_admin), edit=is_callback)
+    else:
+        headline = {
+            "conflict": T_CONFLICT(),
+            "not_in_schedule": T_SLOT_GONE(),
+            "too_soon": T_TOO_SOON(),
+        }.get(res.kind, T_SLOT_GONE())
+        await _after_rejected_slot(
+            msg, session, settings, headline, sid, spid, ymd, edit=is_callback
+        )
+    if is_callback:
         await source.answer()

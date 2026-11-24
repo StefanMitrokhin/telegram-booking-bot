@@ -20,7 +20,7 @@ router = Router(name="phone")
 
 
 @router.message(StateFilter(ClientStates.waiting_phone), F.text, ~F.text.startswith("/"))
-async def phone(message: Message, state: FSMContext, settings, db_user, is_admin, engine):
+async def phone(message: Message, state: FSMContext, session, settings, db_user, is_admin, engine):
     parsed = parse_phone(message.text or "")
     if not parsed.ok:
         await answer_html(
@@ -34,6 +34,7 @@ async def phone(message: Message, state: FSMContext, settings, db_user, is_admin
     user = replace(db_user, phone=str(parsed.value))
     await run_create(
         message,
+        session,
         int(data["service_id"]),
         int(data["specialist_id"]),
         int(data["ymd"]),
