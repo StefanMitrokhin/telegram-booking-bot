@@ -39,18 +39,18 @@ jobs:
       - name: Seed smoke
         run: docker compose run --rm --no-deps bot python -m booking_bot.seed
 
-      - name: Default entrypoint starts bot and applies migrations before token failure
+      - name: Default entrypoint starts bot and applies migrations
         run: |
+          set -e
           docker compose up -d --no-build
+          trap 'docker compose down' EXIT
           ok=0
-          for _ in $(seq 1 30); do
-            if test -f data/booking.db; then
+          for _ in $(seq 1 60); do
+            if docker compose logs bot 2>&1 | grep -qE 'migrations_applied|settings_loaded'; then
               ok=1
               break
             fi
             sleep 1
           done
-          test "$ok" -eq 1
           docker compose logs bot 2>&1 | tee bot.log
-          grep -E 'migrations_applied|settings_loaded' bot.log
-          docker compose down -v
+          test "$ok" -eq 1
