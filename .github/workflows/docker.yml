@@ -18,7 +18,7 @@ jobs:
         run: |
           mkdir -p data
           cp .env.example .env
-          sed -i 's/^BOT_TOKEN=.*/BOT_TOKEN=123456:TEST/' .env
+          sed -i 's/^BOT_TOKEN=.*/BOT_TOKEN=123456789:AAH_fake_token_for_tests_only/' .env
           sed -i 's/^ADMIN_IDS=.*/ADMIN_IDS=1/' .env
 
       - name: Entrypoint argument passthrough
