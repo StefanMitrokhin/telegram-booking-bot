@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import calendar
 import html
 import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNotFound
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,11 +22,13 @@ from booking_bot.db.models import (
     SpecialistService,
     User,
 )
+from booking_bot.db.session import immediate_session
 from booking_bot.domain.enums import BookingStatus
 from booking_bot.domain.views import BookingView, ServiceView, SpecialistView, UserView
 from booking_bot.services.booking import _load_day_intervals, _to_view
 from booking_bot.services.slots import Slot, generate_slots
 from booking_bot.services.timeutils import (
+    as_utc,
     booking_window,
     local_day_bounds,
     localize,
@@ -58,6 +61,31 @@ async def edit_html(message: Message, text: str, reply_markup: InlineKeyboardMar
         logger.warning("edit_html failed", exc_info=exc)
         await answer_html(message, T_ERROR())
         return False
+
+
+async def render(
+    message: Message, text: str, reply_markup: InlineKeyboardMarkup | None = None, *, edit: bool
+):
+    if edit:
+        return await edit_html(message, text, reply_markup)
+    return await answer_html(message, text, reply_markup)
+
+
+def month_weeks(year: int, month: int) -> list[list[int | None]]:
+    return [
+        [None if day == 0 else year * 10000 + month * 100 + day for day in week]
+        for week in calendar.Calendar(firstweekday=0).monthdayscalendar(year, month)
+    ]
+
+
+def shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    index = year * 12 + (month - 1) + delta
+    return index // 12, index % 12 + 1
+
+
+def admin_date_range(settings: Settings, now: datetime) -> tuple[date, date]:
+    today = to_local(now, settings.zone).date()
+    return today - timedelta(days=365), today + timedelta(days=settings.booking_horizon_days)
 
 
 async def toast(callback: CallbackQuery, text: str, *, show_alert: bool = False) -> None:
@@ -141,6 +169,17 @@ async def mark_user_blocked(session: AsyncSession, *, telegram_id: int) -> None:
         row.is_blocked = True
 
 
+async def notify_admins(bot, engine, settings: Settings, text: str) -> None:
+    for admin_id in settings.admin_ids:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except (TelegramForbiddenError, TelegramNotFound):
+            async with immediate_session(engine) as session:
+                await mark_user_blocked(session, telegram_id=admin_id)
+        except Exception:
+            logger.warning("admin_notify_failed", extra={"telegram_id": admin_id})
+
+
 async def list_active_services(session: AsyncSession) -> list[ServiceView]:
     rows = await session.scalars(
         select(Service).where(Service.is_active.is_(True)).order_by(Service.sort_order, Service.id)
@@ -156,16 +195,6 @@ async def get_service(session: AsyncSession, service_id: int) -> ServiceView | N
 async def get_specialist(session: AsyncSession, specialist_id: int) -> SpecialistView | None:
     row = await session.get(Specialist, specialist_id)
     return specialist_view(row) if row else None
-
-
-async def list_all_services(session: AsyncSession) -> list[Service]:
-    return list(await session.scalars(select(Service).order_by(Service.sort_order, Service.id)))
-
-
-async def list_all_specialists(session: AsyncSession) -> list[Specialist]:
-    return list(
-        await session.scalars(select(Specialist).order_by(Specialist.sort_order, Specialist.id))
-    )
 
 
 async def list_specialists_for_service(
@@ -209,18 +238,19 @@ async def list_specialists_for_service(
 
 
 async def _busy_for_day(
-    session: AsyncSession, specialist_id: int, work_date: date, zone
+    session: AsyncSession, specialist_id: int, work_date: date, zone, buffer_minutes: int
 ) -> list[tuple[datetime, datetime]]:
     start_utc, end_utc = local_day_bounds(work_date, zone)
+    buffer = timedelta(minutes=buffer_minutes)
     rows = await session.scalars(
         select(Booking).where(
             Booking.specialist_id == specialist_id,
             Booking.status == BookingStatus.CONFIRMED,
-            Booking.starts_at < end_utc + timedelta(minutes=1),
-            Booking.ends_at > start_utc - timedelta(minutes=1),
+            Booking.starts_at < end_utc + buffer,
+            Booking.ends_at > start_utc - buffer,
         )
     )
-    return [(b.starts_at, b.ends_at) for b in rows]
+    return [(as_utc(b.starts_at), as_utc(b.ends_at)) for b in rows]
 
 
 async def list_day_slots(
@@ -236,7 +266,9 @@ async def list_day_slots(
     if service is None:
         return []
     intervals = await _load_day_intervals(session, specialist_id, work_date, work_date.weekday())
-    busy = await _busy_for_day(session, specialist_id, work_date, settings.zone)
+    busy = await _busy_for_day(
+        session, specialist_id, work_date, settings.zone, settings.buffer_minutes
+    )
     slots: list[Slot] = generate_slots(
         day=work_date,
         intervals=intervals,
