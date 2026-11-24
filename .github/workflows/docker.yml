@@ -40,6 +40,8 @@ jobs:
         run: docker compose run --rm --no-deps bot python -m booking_bot.seed
 
       - name: Default entrypoint starts bot and applies migrations
+        env:
+          COMPOSE_FILE: docker-compose.yml:.github/docker-compose.smoke.yml
         run: |
           set -e
           docker compose down --remove-orphans || true
