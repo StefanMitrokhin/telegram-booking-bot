@@ -1,0 +1,8 @@
+# Один процесс на один файл SQLite. Не масштабировать сервис.
+services:
+  bot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
