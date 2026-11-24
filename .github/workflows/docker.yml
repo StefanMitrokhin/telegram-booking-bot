@@ -46,11 +46,13 @@ jobs:
           trap 'docker compose down' EXIT
           ok=0
           for _ in $(seq 1 60); do
-            if docker compose logs bot 2>&1 | grep -qE 'migrations_applied|settings_loaded'; then
+            if docker compose logs bot 2>&1 | grep -q 'migrations_applied'; then
               ok=1
               break
             fi
             sleep 1
           done
-          docker compose logs bot 2>&1 | tee bot.log
-          test "$ok" -eq 1
+          if [ "$ok" -ne 1 ]; then
+            docker compose logs bot
+            exit 1
+          fi
