@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from booking_bot.db.models import Booking, User
@@ -28,7 +28,7 @@ HEADERS = (
     "Начало",
     "Конец",
     "Длительность, мин",
-    "Стоимость, руб",
+    "Стоимость, руб",  # noqa: RUF001
     "Создана",
     "Отменена",
     "Причина отмены",
@@ -143,3 +143,29 @@ def build_xlsx(rows: list[tuple[Booking, User]], zone) -> bytes:
     out = io.BytesIO()
     workbook.save(out)
     return out.getvalue()
+
+
+async def count_bookings_for_period(
+    session: AsyncSession, date_from: date, date_to: date, zone
+) -> int:
+    start_utc, _ = local_day_bounds(date_from, zone)
+    _, end_utc = local_day_bounds(date_to, zone)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(Booking)
+        .where(Booking.starts_at >= start_utc, Booking.starts_at < end_utc)
+    )
+    return int(total or 0)
+
+
+def export_filename(date_from: date, date_to: date, kind: str) -> str:
+    ext = "xlsx" if kind == "xlsx" else "csv"
+    return f"bookings_{date_from:%Y%m%d}_{date_to:%Y%m%d}.{ext}"
+
+
+async def build_export(
+    session: AsyncSession, *, kind: str, date_from: date, date_to: date, zone
+) -> tuple[bytes, str, int]:
+    rows = await fetch_bookings_for_period(session, date_from, date_to, zone)
+    data = build_xlsx(rows, zone) if kind == "xlsx" else build_csv(rows, zone)
+    return data, export_filename(date_from, date_to, kind), len(rows)

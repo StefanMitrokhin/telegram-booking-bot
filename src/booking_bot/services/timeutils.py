@@ -42,7 +42,7 @@ _WEEKDAYS_FULL = (
     "суббота",
     "воскресенье",
 )
-_WEEKDAYS_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+_WEEKDAYS_SHORT = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")  # noqa: RUF001
 
 EN_DASH = "\u2013"
 
@@ -122,6 +122,10 @@ def format_span(start_utc: datetime, end_utc: datetime, zone: ZoneInfo) -> str:
         f"{format_short_day(end_local)} "
         f"{format_hhmm(end_local.hour * 60 + end_local.minute)}"
     )
+
+
+def weekday_short(weekday: int) -> str:
+    return _WEEKDAYS_SHORT[weekday]
 
 
 def month_title(year: int, month: int) -> str:

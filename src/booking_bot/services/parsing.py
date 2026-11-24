@@ -11,18 +11,18 @@ _MSG_NAME = "Название должно быть от 2 до 80 символ�
 _MSG_DESC = "Описание не длиннее 500 символов. Пришлите короче или «-»."
 _MSG_DURATION_INT = "Нужно целое число минут, например 60."
 _MSG_DURATION_RANGE = "Длительность от 5 до 480 минут."
-_MSG_PRICE = "Не понял цену. Пример: 1500 или 1500,50."
+_MSG_PRICE = "Не понял цену. Пример: 1500 или 1500,50."  # noqa: RUF001
 _MSG_PRICE_MAX = "Цена не больше 1 000 000 ₽."
-_MSG_TIME = "Нужно время в формате ЧЧ:ММ, например 10:00."
+_MSG_TIME = "Нужно время в формате ЧЧ:ММ, например 10:00."  # noqa: RUF001
 _MSG_END_BEFORE_START = "Конец должен быть позже начала."
-_MSG_INTERVAL_OVERLAP = "Интервал пересекается с уже существующим."
-_MSG_DATE = "Нужна дата в формате ДД.ММ.ГГГГ, например 24.11.2026."
+_MSG_INTERVAL_OVERLAP = "Интервал пересекается с уже существующим."  # noqa: RUF001
+_MSG_DATE = "Нужна дата в формате ДД.ММ.ГГГГ, например 24.11.2026."  # noqa: RUF001
 _MSG_PERIOD_START = "Дата начала позже даты конца."
 _MSG_PERIOD_LEN = "Период не длиннее 366 дней."
-_MSG_DUP_SERVICE = "Услуга с таким названием уже есть."
-_MSG_DUP_SPECIALIST = "Специалист с таким именем уже есть."
+_MSG_DUP_SERVICE = "Услуга с таким названием уже есть."  # noqa: RUF001
+_MSG_DUP_SPECIALIST = "Специалист с таким именем уже есть."  # noqa: RUF001
 _MSG_BROADCAST_EMPTY = "Текст пустой. Пришлите сообщение."
-_MSG_BROADCAST_LONG = "Текст длиннее 4000 символов. Сократите его."
+_MSG_BROADCAST_LONG = "Текст длиннее 4000 символов. Сократите его."  # noqa: RUF001
 _MSG_BROADCAST_BUSY = "Рассылка уже идёт."
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -58,17 +58,17 @@ def format_phone(stored: str) -> str:
 def parse_phone(text: str) -> Parsed:
     raw = text.strip()
     if not raw:
-        return Parsed(False, message="Не похоже на номер телефона. Пример: +7 999 123-45-67.")
+        return Parsed(False, message="Не похоже на номер телефона. Пример: +7 999 123-45-67.")  # noqa: RUF001
     digits = "".join(_PHONE_DIGITS_RE.findall(raw))
     if raw.startswith("+7"):
         if len(digits) == 11 and digits.startswith("7"):
             return Parsed(True, f"+7{digits[1:]}")
-        return Parsed(False, message="Не похоже на номер телефона. Пример: +7 999 123-45-67.")
+        return Parsed(False, message="Не похоже на номер телефона. Пример: +7 999 123-45-67.")  # noqa: RUF001
     if digits.startswith("8") and len(digits) == 11:
         return Parsed(True, f"+7{digits[1:]}")
     if len(digits) == 10:
         return Parsed(True, f"+7{digits}")
-    return Parsed(False, message="Не похоже на номер телефона. Пример: +7 999 123-45-67.")
+    return Parsed(False, message="Не похоже на номер телефона. Пример: +7 999 123-45-67.")  # noqa: RUF001
 
 
 def parse_price(text: str) -> Parsed:
@@ -158,6 +158,10 @@ def parse_period(start: date, end: date) -> Parsed:
     if (end - start).days + 1 > 366:
         return Parsed(False, message=_MSG_PERIOD_LEN)
     return Parsed(True, (start, end))
+
+
+def interval_overlap_message() -> str:
+    return _MSG_INTERVAL_OVERLAP
 
 
 def dup_service_message() -> str:

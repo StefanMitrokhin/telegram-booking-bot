@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -17,7 +17,13 @@ from booking_bot.domain.views import BookingView
 from booking_bot.services.reminders import plan_reminders
 from booking_bot.services.schedule import resolve_intervals
 from booking_bot.services.slots import slot_in_schedule
-from booking_bot.services.timeutils import as_utc, booking_window, localize, ymd_to_date
+from booking_bot.services.timeutils import (
+    as_utc,
+    booking_window,
+    local_day_bounds,
+    localize,
+    ymd_to_date,
+)
 
 logger = logging.getLogger("booking_bot.services.booking")
 
@@ -83,12 +89,12 @@ def _to_view(booking: Booking, client: User) -> BookingView:
         specialist_name=booking.specialist_name,
         price_minor=booking.price_minor,
         duration_minutes=booking.duration_minutes,
-        starts_at=booking.starts_at,
-        ends_at=booking.ends_at,
+        starts_at=as_utc(booking.starts_at),
+        ends_at=as_utc(booking.ends_at),
         status=booking.status,
         cancel_reason=booking.cancel_reason,
-        created_at=booking.created_at,
-        cancelled_at=booking.cancelled_at,
+        created_at=as_utc(booking.created_at),
+        cancelled_at=as_utc(booking.cancelled_at) if booking.cancelled_at else None,
         cancelled_by_telegram_id=booking.cancelled_by_telegram_id,
         client_telegram_id=client.telegram_id,
         client_name=client.full_name,
@@ -324,3 +330,16 @@ async def _skip_pending_reminders(session: AsyncSession, booking_id: int) -> Non
     for reminder in reminders.scalars():
         reminder.status = ReminderStatus.SKIPPED
         reminder.last_error = "booking_cancelled"
+
+
+async def list_day_bookings(session: AsyncSession, *, day: date, zone) -> list[BookingView]:
+    """All bookings of a local day, any status, grouped by specialist order then by start."""
+    start_utc, end_utc = local_day_bounds(day, zone)
+    rows = await session.execute(
+        select(Booking, User)
+        .join(User, User.id == Booking.client_id)
+        .join(Specialist, Specialist.id == Booking.specialist_id)
+        .where(Booking.starts_at >= start_utc, Booking.starts_at < end_utc)
+        .order_by(Specialist.sort_order, Specialist.id, Booking.starts_at, Booking.id)
+    )
+    return [_to_view(booking, client) for booking, client in rows.all()]

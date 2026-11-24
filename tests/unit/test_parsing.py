@@ -74,7 +74,7 @@ def test_date():
 
 def test_name():
     assert parse_name("  Анна   Иванова ").value == "Анна Иванова"
-    assert not parse_name("А").ok
+    assert not parse_name("А").ok  # noqa: RUF001
     assert not parse_name("x" * 81).ok
 
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from booking_bot.services.reminders import plan_reminders, reminder_decision
 from booking_bot.bot.texts import reminder_text
+from booking_bot.services.reminders import plan_reminders, reminder_decision
 
 
 def test_plan_three_days():
@@ -102,4 +102,4 @@ def test_template_generic():
         zone=zone,
         offset_minutes=300,
     )
-    assert "Напоминаем о записи" in text
+    assert "Напоминаем о записи" in text  # noqa: RUF001

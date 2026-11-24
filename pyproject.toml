@@ -52,3 +52,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 
 [tool.ruff.format]
 quote-style = "double"
+exclude = ["docs/*.md"]
