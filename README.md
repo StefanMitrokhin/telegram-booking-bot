@@ -1,6 +1,7 @@
 # Telegram-бот записи клиентов
 
 [![CI](https://github.com/Stephanchik/telegram-booking-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/Stephanchik/telegram-booking-bot/actions/workflows/ci.yml)
+[![Docker](https://github.com/Stephanchik/telegram-booking-bot/actions/workflows/docker.yml/badge.svg)](https://github.com/Stephanchik/telegram-booking-bot/actions/workflows/docker.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-blue)](https://docs.aiogram.dev/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -75,7 +76,7 @@ docker compose logs -f bot
 Демо-каталог барбершопа «Норд»:
 
 ```bash
-docker compose exec bot python -m booking_bot.seed
+docker compose exec -u appuser bot python -m booking_bot.seed
 ```
 
 Повторный запуск сида ничего не дублирует.

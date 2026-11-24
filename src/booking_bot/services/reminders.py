@@ -147,7 +147,7 @@ async def deliver_reminder(
         kind = classify_send_error(exc)
         async with immediate_session(engine) as session:
             reminder = await session.get(Reminder, reminder_id)
-            if reminder is None:
+            if reminder is None or reminder.status != ReminderStatus.SENDING:
                 return
             if kind == "blocked":
                 reminder.status = ReminderStatus.SKIPPED

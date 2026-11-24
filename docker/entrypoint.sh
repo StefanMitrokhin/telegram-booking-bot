@@ -2,4 +2,7 @@
 set -eu
 mkdir -p /app/data
 chown appuser:appuser /app/data
-exec setpriv --reuid=appuser --regid=appuser --init-groups -- python -m booking_bot
+if [ "$#" -eq 0 ]; then
+  set -- python -m booking_bot
+fi
+exec setpriv --reuid=appuser --regid=appuser --init-groups -- "$@"

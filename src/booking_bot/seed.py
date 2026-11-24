@@ -284,8 +284,6 @@ async def _seed_bookings(*, engine, settings, demo_id, services, specialists, no
             step_minutes=settings.slot_step_minutes,
             offsets_minutes=settings.reminder_offsets_minutes,
         )
-    else:
-        logger.warning("seed_slot_missing")
 
     if first_created is None or first_created.booking is None:
         logger.warning("seed_slot_missing")

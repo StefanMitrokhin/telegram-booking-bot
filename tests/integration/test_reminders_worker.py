@@ -203,6 +203,28 @@ async def test_cancel_during_sending_does_not_mark_sent(engine, zone):
         assert reminder.status == ReminderStatus.SENDING
 
 
+async def test_skipped_during_send_survives_temporary_error(engine, zone):
+    reminder_id, _ = await _seed_reminder(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime(2026, 11, 24, 10, 0, tzinfo=UTC)
+
+    class SkipOnSend(FakeSender):
+        async def send(self, telegram_id: int, text: str) -> None:
+            async with factory() as session:
+                reminder = await session.get(Reminder, reminder_id)
+                reminder.status = ReminderStatus.SKIPPED
+                reminder.last_error = "booking_cancelled"
+                await session.commit()
+            raise RuntimeError("temporary")
+
+    sender = SkipOnSend()
+    await deliver_reminder(reminder_id, sender, now, engine=engine, zone=zone)
+    async with factory() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        assert reminder.status == ReminderStatus.SKIPPED
+        assert reminder.last_error == "booking_cancelled"
+
+
 async def test_remove_scheduled_reminder_jobs():
     scheduler = AsyncIOScheduler(timezone=UTC)
     run_at = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)

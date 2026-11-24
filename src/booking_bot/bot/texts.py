@@ -218,7 +218,7 @@ def T_CANCEL_TOO_LATE(hours_label: str, salon_phone: str) -> str:
     return (
         f"{body}\nПозвоните: {html.escape(salon_phone)}"  # noqa: RUF001
         if salon_phone
-        else f"{body}\n\nНапишите администратору."  # noqa: RUF001
+        else f"{body}\nНапишите администратору."  # noqa: RUF001
     )
 
 

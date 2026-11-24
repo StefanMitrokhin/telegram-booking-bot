@@ -1,0 +1,56 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Prepare environment
+        run: |
+          mkdir -p data
+          cp .env.example .env
+          sed -i 's/^BOT_TOKEN=.*/BOT_TOKEN=123456:TEST/' .env
+          sed -i 's/^ADMIN_IDS=.*/ADMIN_IDS=1/' .env
+
+      - name: Entrypoint argument passthrough
+        run: |
+          docker compose run --rm --no-deps bot python -c "print('entrypoint_passthrough_ok')"
+
+      - name: Apply migrations
+        run: docker compose run --rm --no-deps bot alembic upgrade head
+
+      - name: Verify database file ownership
+        run: |
+          test -f data/booking.db
+          db_uid="$(stat -c '%u' data/booking.db)"
+          db_gid="$(stat -c '%g' data/booking.db)"
+          test "$db_uid" -eq 10001
+          test "$db_gid" -eq 10001
+
+      - name: Seed smoke
+        run: docker compose run --rm --no-deps bot python -m booking_bot.seed
+
+      - name: Default entrypoint starts bot and applies migrations before token failure
+        run: |
+          docker compose up -d --no-build
+          ok=0
+          for _ in $(seq 1 30); do
+            if test -f data/booking.db; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ok" -eq 1
+          docker compose logs bot 2>&1 | tee bot.log
+          grep -E 'migrations_applied|settings_loaded' bot.log
+          docker compose down -v
